@@ -4,7 +4,6 @@ import os
 import hashlib
 import threading
 import random
-import time
 import logging
 
 from collections import deque
@@ -19,7 +18,7 @@ REQUEST_CHUNK = 'REQUEST_CHUNK'
 
 class Logger:
     def __init__(self, filename):
-        logging.basicConfig(filename=filename, filemode='a')
+        logging.basicConfig(filename=filename, format='%(message)s', filemode='a')
         self.logger = logging.getLogger()
         self.logger.setLevel(logging.DEBUG)
 
@@ -27,7 +26,7 @@ class Logger:
         self.name = name
 
     def local_chunks(self, index, hash, ip, port):
-        ip = self.use_local_host(ip)
+        ip = self._use_local_host(ip)
         message = f'{self.name},LOCAL_CHUNKS,{index},{hash},{ip},{port}'
         self.logger.info(message)
 
@@ -36,7 +35,7 @@ class Logger:
         self.logger.info(message)
 
     def request_chunk(self, index, ip, port):
-        ip = self.use_local_host(ip)
+        ip = self._use_local_host(ip)
         message = f'{self.name},{index},{ip},{port}'
         self.logger.info(message)
 
@@ -132,7 +131,6 @@ class Tracker:
     def check_in_chunks(self, chunks):
         for chunk in chunks:
             self.check_in_chunk(chunk)
-            time.sleep(1)
 
     def check_in_chunk(self, chunk):
         index = chunk.index
@@ -140,7 +138,6 @@ class Tracker:
         host = self.client_host
         port = self.client_port
         message = f'LOCAL_CHUNKS,{index},{file_hash},{host},{port}'
-        print(f'sending_message: {message}')
         self.socket.send_string(message)
         # LOG
         logger.local_chunks(index, file_hash, host, port)
@@ -150,7 +147,6 @@ class Tracker:
         self.socket.send_string(message)
         logger.where_chunk(chunk_index)
         response = self.socket.recv_string()
-        print(response)
         response_parts = response.split(',')
         if response_parts[0] == 'GET_CHUNK_FROM':
             return TrackerResponse(
@@ -177,20 +173,17 @@ class TrackerResponse:
         self.clients = clients
 
 
-logger = Logger('logs.log')
-
-
 class P2PClient:
     def __init__(self, folder, transfer_port, name):
         self.folder = folder
-        self.ip = '127.0.0.1'
+        self.ip = 'localhost'
         self.port = transfer_port
         self.local_chunks_path = os.path.join(folder, 'local_chunks.txt')
         self.lock = threading.Lock()
 
     def check_in_local_chunks(self):
         # connect to P2PTracker++
-        self.tracker = Tracker('127.0.0.1', 5001)
+        self.tracker = Tracker('localhost', 5100)
         self.tracker.connect_from(self.ip, self.port)
         # check in local chunks on system
         local_chunks, capacity = self.get_local_chunks()
@@ -234,21 +227,17 @@ class P2PClient:
         return missing_indices_queue
 
     def request_missing_chunk(self, peer, index):
-        print(peer.ip, peer.port)
         peer_socket = Socket(peer.ip, peer.port).connect()
         message = f'{REQUEST_CHUNK},{index}'
         peer_socket.send_string(message)
         data = peer_socket.recvall()
-        print('never ever here')
         peer_socket.close()
         return data
 
     def get_missing_chunk(self, random_peer, index):
         file_data = self.request_missing_chunk(random_peer, index)
         file_name = f'chunk_{index}'
-        print('entering write to file lock')
         self.write_to_file_system(file_name, file_data)
-        print('exiting write to file lock')
         self.append_to_local_chunks(index)
 
     def write_to_file_system(self, file_name, file_data):
@@ -269,7 +258,6 @@ class P2PClient:
 
         updated = '\n'.join(f'{i},chunk_{i}' for i in sorted(chunks))
         updated += f'\n{self.capacity},LASTCHUNK'
-        print(updated)
         with open(self.local_chunks_path, 'w') as file:
             file.write(updated)
 
@@ -277,16 +265,11 @@ class P2PClient:
         # use missing chunks queue to obtain missing chunks
         queue = self.missing_indices
         while len(queue) > 0:
-            time.sleep(2)
-            print('GET_NEXT_MISSING_CHUNK')
             next_chunk_index = queue.popleft()
-            print(f'searching for idx: {next_chunk_index}')
             response = self.tracker.where_chunk(next_chunk_index)
             if response.type != 'GET_CHUNK_FROM':
                 queue.append(next_chunk_index)
             else:
-                print('clients!')
-                print(response.clients)
                 random_peer = random.choice(response.clients)
                 self.get_missing_chunk(random_peer, next_chunk_index)
                 self.tracker.check_in_chunk(Chunk(
@@ -300,10 +283,8 @@ class P2PClient:
         file_index = request.strip().split(',')[1]
         file_name = f'chunk_{file_index}'
         file_data = self.read_file_data(file_name)
-        print('START_SENDING_TO_PEER')
         peer_socket.sendall(file_data)
         peer_socket.close()
-        print('FINISH_SENDING_TO_PEER')
 
     def read_file_data(self, file_name):
         path = os.path.join(self.folder, file_name)
@@ -319,7 +300,6 @@ class P2PClient:
     def listen_for_requests(self):
         client_socket = Socket(self.ip, self.port).listen()
         while True:
-            print('LISTEN_FOR_REQUESTS')
             peer_socket, peer_address = client_socket.accept()
             threading.Thread(
                 target=self.handle_peer_request,
@@ -349,6 +329,7 @@ if __name__ == "__main__":
     parser.add_argument("-transfer_port", type=int)
     parser.add_argument("-name", type=str)
     args = parser.parse_args()
+    logger = Logger('logs.log')
     logger.set_entity_name(args.name)
     start_client(
         args.folder,

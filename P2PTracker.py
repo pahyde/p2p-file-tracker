@@ -20,17 +20,16 @@ lock = threading.Lock()
 
 class Logger:
     def __init__(self, filename):
-        logging.basicConfig(filename=filename, filemode='a')
+        logging.basicConfig(filename=filename, format='%(message)s', filemode='a')
         self.logger = logging.getLogger()
         self.logger.setLevel(logging.DEBUG)
 
     def get_chunk_from(self, index, hash, clients):
-        ip = self.use_local_host(ip)
-        message = f'{self.name},GET_CHUNK_FROM,{index},{hash}{clients}'
+        message = f'P2PTracker,GET_CHUNK_FROM,{index},{hash}{clients}'
         self.logger.info(message)
 
     def chunk_location_unknown(self, index):
-        message = f'{self.name},WHERE_CHUNK,{index}'
+        message = f'P2PTracker,WHERE_CHUNK,{index}'
         self.logger.info(message)
 
     def _use_local_host(self, ip):
@@ -142,9 +141,7 @@ def create_tracker_socket(host, port):
 def handle_local_chunks(client, request_tokens):
     index, hash, ip, port = request_tokens[1:]
     candidate = ChunkCandidate(hash, ip, port)
-    print('entering local chunks lock')
     tracker.check_in(index, candidate)
-    print('exiting local chunks lock')
 
 
 def handle_where_chunk(client, request_tokens):
@@ -166,8 +163,6 @@ def handle_client_connection(client_socket, client_address):
         request = client.recv()
         if not request:
             break
-        print(f'received message: {request}')
-        print(tracker)
         request_tokens = request.strip().split(',')
         request_type = request_tokens[0]
         if request_type == LOCAL_CHUNKS:
@@ -192,4 +187,4 @@ def start_tracker(host, port):
 
 
 if __name__ == "__main__":
-    start_tracker('127.0.0.1', 5001)
+    start_tracker('localhost', 5100)
