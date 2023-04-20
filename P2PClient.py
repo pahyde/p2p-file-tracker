@@ -88,9 +88,9 @@ class Socket:
 
 
 class Tracker:
-    def __init__(self, tracker_socket):
-        self.host = '127.0.0.1'
-        self.port = 5001
+    def __init__(self, host, port):
+        self.host = host
+        self.port = int(port)
         self.client_host = None
         self.client_port = None
         self.socket = Socket(self.host, self.port).connect()
@@ -231,20 +231,20 @@ class P2PClient:
             updated += f'\n{self.capacity},LASTCHUNK'
             file.write(updated)
 
-    def request_missing_chunks(self, local_chunks, num_chunks, tracker):
+    def request_missing_chunks(self):
         # use missing chunks queue to obtain missing chunks
         queue = self.missing_indices
         while len(queue) > 0:
             time.sleep(2)
             next_chunk_index = queue.popleft()
             print(f'searching for idx: {next_chunk_index}')
-            response = tracker.where_chunk(next_chunk_index)
+            response = self.tracker.where_chunk(next_chunk_index)
             if response.type != 'GET_CHUNK_FROM':
                 queue.append(next_chunk_index)
             else:
                 random_peer = random.choice(response.clients)
                 self.get_missing_chunk(random_peer, next_chunk_index)
-                tracker.check_in_chunk(Chunk(
+                self.tracker.check_in_chunk(Chunk(
                     response.index,
                     response.file_hash
                 ))
