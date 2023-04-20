@@ -3,9 +3,10 @@ import argparse
 import os
 import time
 import hashlib
+import threading
+import random
 
 from collections import deque
-# import threading
 # import sys
 # import logging
 
@@ -22,6 +23,12 @@ class Chunk:
 
     def __repr__(self):
         return self.__str__()
+
+
+class Client:
+    def __init__(self, ip, port):
+        self.ip = ip
+        self.port = port
 
 
 class TrackerSocket:
@@ -64,6 +71,9 @@ class TrackerSocket:
                 index=None,
                 file_hash=None,
                 clients=None)
+
+    def _get_client_list(parts):
+        return [Client(parts[i], parts[i+1]) for i in range(0, len(parts), 2)]
 
     def send(self, message):
         payload = message.encode('utf-8')
@@ -112,29 +122,39 @@ def get_local_chunks(folder):
     return local_chunks, num_chunks
 
 
-def get_missing_chunks(found, total):
+def get_missing_indices(found, total):
     found_indices = set(chunk.index for chunk in found)
     missing_indices = [n for n in range(1, total+1) if n not in found_indices]
-    print(total)
-    missing_chunks = deque()
+    missing_indices_queue = deque()
     for idx in missing_indices:
-        missing_chunks.append(idx)
-    return missing_chunks
+        missing_indices_queue.append(idx)
+    return missing_indices_queue
 
 
-def request_missing_chunks(local_chunks, num_chunks):
+def request_missing_chunk(peer, index):
+    pass
+
+
+def request_missing_chunks(local_chunks, num_chunks, tracker):
     # use missing chunks queue to obtain missing chunks
-    missing_chunks = get_missing_chunks(local_chunks, num_chunks)
-    while len(missing_chunks) > 0:
-        next_chunk_index = missing_chunks.popleft()
-        print(f'searching for idx {next_chunk_index}')
+    missing_indices = get_missing_indices(local_chunks, num_chunks)
+    while len(missing_indices) > 0:
+        next_chunk_index = missing_indices.popleft()
+        print(f'searching for idx: {next_chunk_index}')
         response = tracker.where_chunk(next_chunk_index)
-        if response.type == 'GET_CHUNK_FROM':
-            print('chunk found!')
-            print(response)
-        elif response.type == 'CHUNK_LOCATION_UNKNOWN':
-            missing_chunks.append(next_chunk_index)
-        time.sleep(2)
+        if response.type != 'GET_CHUNK_FROM':
+            missing_indices.append(next_chunk_index)
+            continue
+        client_peer = random.choice(response.clients)
+        request_missing_chunk(client_peer, response.index)
+        tracker.check_in_chunk(Chunk(
+            response.index,
+            response.file_hash
+        ))
+
+
+def listen_for_requests():
+    pass
 
 
 def start_client(folder, transfer_port, name):
@@ -142,6 +162,17 @@ def start_client(folder, transfer_port, name):
     local_chunks, num_chunks = get_local_chunks(folder)
     tracker = TrackerSocket('127.0.0.1', 5001)
     tracker.check_in_chunks(local_chunks)
+    # Ask P2PTracker for locations of clients who have missing chunks
+    # then request chunks for return client addresses
+    threading.Thread(
+        target=request_missing_chunks,
+        args=(local_chunks, num_chunks, tracker)
+    ).start()
+    # listen and serve incoming chunk requests
+    threading.Thread(
+        target=listen_for_requests,
+        args=()
+    )
 
 
 
