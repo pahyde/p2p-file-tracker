@@ -3,7 +3,7 @@ import threading
 import sys
 # import hashlib
 # import time
-# import logging
+import logging
 
 
 # TODO: Implement P2PTracker
@@ -13,6 +13,30 @@ WHERE_CHUNK = 'WHERE_CHUNK'
 
 GET_CHUNK_FROM = 'GET_CHUNK_FROM'
 CHUNK_LOCATION_UNKNOWN = 'CHUNK_LOCATION_UNKNOWN'
+
+
+lock = threading.Lock()
+
+
+class Logger:
+    def __init__(self, filename):
+        logging.basicConfig(filename=filename, filemode='a')
+        self.logger = logging.getLogger()
+        self.logger.setLevel(logging.DEBUG)
+
+    def get_chunk_from(self, index, hash, clients):
+        ip = self.use_local_host(ip)
+        message = f'{self.name},GET_CHUNK_FROM,{index},{hash}{clients}'
+        self.logger.info(message)
+
+    def chunk_location_unknown(self, index):
+        message = f'{self.name},WHERE_CHUNK,{index}'
+        self.logger.info(message)
+
+    def _use_local_host(self, ip):
+        if ip == '127.0.0.1':
+            return 'localhost'
+        return ip
 
 
 class ClientSocket:
@@ -56,30 +80,34 @@ class ChunkTracker:
         self.chunk_list = {}
 
     def check_in(self, index, candidate):
-        if self.is_verified(index):
-            self.chunk_in(index, candidate)
-            return
-        self._check_in(index, candidate)
-        if self.has_hash_majority(index):
-            self.add_new_chunk(index, candidate)
+        with lock:
+            if self.is_verified(index):
+                self.chunk_in(index, candidate)
+                return
+            self._check_in(index, candidate)
+            majority = self.hash_majority(index)
+            if majority is not None:
+                candidates = self.check_list[index]
+                self.add_new_chunk(index, candidates, majority)
 
     def chunk_in(self, index, candidate):
         client = Client(candidate.ip, candidate.port)
         self.chunk_list[index].client_list.append(client)
 
-    def add_new_chunk(self, index, candidate):
-        client = Client(candidate.ip, candidate.port)
-        self.chunk_list[index] = Chunk([client], candidate.hash)
+    def add_new_chunk(self, index, candidates, hash):
+        clients = [Client(c.ip, c.port) for c in candidates if c.hash == hash]
+        self.chunk_list[index] = Chunk(clients, hash)
 
     def get_chunk(self, index):
-        if index not in self.chunk_list:
-            return None
-        return self.chunk_list[index]
+        with lock:
+            if index not in self.chunk_list:
+                return None
+            return self.chunk_list[index]
 
     def is_verified(self, index):
         return index in self.chunk_list
 
-    def has_hash_majority(self, index):
+    def hash_majority(self, index):
         if index not in self.check_list:
             return False
         count = {}
@@ -87,16 +115,20 @@ class ChunkTracker:
             hash = candidate.hash
             count[hash] = count.get(hash, 0) + 1
             if count[hash] == 2:
-                return True
-        return False
+                return hash
+        return None
 
     def _check_in(self, index, candidate):
         if index not in self.check_list:
             self.check_list[index] = []
         self.check_list[index].append(candidate)
 
+    def __repr__(self):
+        return f'{self.check_list}\n\n{self.chunk_list}\n\n\n'
+
 
 tracker = ChunkTracker()
+logger = Logger('logs.log')
 
 
 def create_tracker_socket(host, port):
@@ -110,18 +142,22 @@ def create_tracker_socket(host, port):
 def handle_local_chunks(client, request_tokens):
     index, hash, ip, port = request_tokens[1:]
     candidate = ChunkCandidate(hash, ip, port)
+    print('entering local chunks lock')
     tracker.check_in(index, candidate)
+    print('exiting local chunks lock')
 
 
 def handle_where_chunk(client, request_tokens):
     index = request_tokens[1]
     if not tracker.is_verified(index):
         client.send(f'{CHUNK_LOCATION_UNKNOWN},{index}')
+        logger.chunk_location_unknown(index)
         return
     chunk = tracker.get_chunk(index)
-    clients = ''.join(f'{client.ip}{client.port}'
+    clients = ''.join(f',{client.ip},{client.port}'
                       for client in chunk.client_list)
-    client.send(f'{GET_CHUNK_FROM}{index}{chunk.hash}{clients}')
+    client.send(f'{GET_CHUNK_FROM},{index},{chunk.hash}{clients}')
+    logger.get_chunk_from(index, chunk.hash, clients)
 
 
 def handle_client_connection(client_socket, client_address):
@@ -131,6 +167,7 @@ def handle_client_connection(client_socket, client_address):
         if not request:
             break
         print(f'received message: {request}')
+        print(tracker)
         request_tokens = request.strip().split(',')
         request_type = request_tokens[0]
         if request_type == LOCAL_CHUNKS:

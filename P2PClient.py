@@ -5,16 +5,45 @@ import hashlib
 import threading
 import random
 import time
+import logging
 
 from collections import deque
 # import sys
-# import logging
 
 
 # TODO: Implement P2PClient that connects to P2PTracker
 
 
 REQUEST_CHUNK = 'REQUEST_CHUNK'
+
+
+class Logger:
+    def __init__(self, filename):
+        logging.basicConfig(filename=filename, filemode='a')
+        self.logger = logging.getLogger()
+        self.logger.setLevel(logging.DEBUG)
+
+    def set_entity_name(self, name):
+        self.name = name
+
+    def local_chunks(self, index, hash, ip, port):
+        ip = self.use_local_host(ip)
+        message = f'{self.name},LOCAL_CHUNKS,{index},{hash},{ip},{port}'
+        self.logger.info(message)
+
+    def where_chunk(self, index):
+        message = f'{self.name},WHERE_CHUNK,{index}'
+        self.logger.info(message)
+
+    def request_chunk(self, index, ip, port):
+        ip = self.use_local_host(ip)
+        message = f'{self.name},{index},{ip},{port}'
+        self.logger.info(message)
+
+    def _use_local_host(self, ip):
+        if ip == '127.0.0.1':
+            return 'localhost'
+        return ip
 
 
 class Chunk:
@@ -32,13 +61,13 @@ class Chunk:
 class Client:
     def __init__(self, ip, port):
         self.ip = ip
-        self.port = port
+        self.port = int(port)
 
 
 class Socket:
     def __init__(self, host, port):
         self.host = host
-        self.port = port
+        self.port = int(port)
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
     def connect(self):
@@ -46,7 +75,7 @@ class Socket:
         return self
 
     def listen(self):
-        tracker_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.socket.bind((self.host, self.port))
         self.socket.listen()
         return self
@@ -113,11 +142,15 @@ class Tracker:
         message = f'LOCAL_CHUNKS,{index},{file_hash},{host},{port}'
         print(f'sending_message: {message}')
         self.socket.send_string(message)
+        # LOG
+        logger.local_chunks(index, file_hash, host, port)
 
     def where_chunk(self, chunk_index):
         message = f'WHERE_CHUNK,{chunk_index}'
         self.socket.send_string(message)
+        logger.where_chunk(chunk_index)
         response = self.socket.recv_string()
+        print(response)
         response_parts = response.split(',')
         if response_parts[0] == 'GET_CHUNK_FROM':
             return TrackerResponse(
@@ -132,8 +165,8 @@ class Tracker:
                 file_hash=None,
                 clients=None)
 
-    def _get_client_list(parts):
-        return [Client(parts[i], parts[i+1]) for i in range(0, len(parts), 2)]
+    def _get_client_list(self, parts):
+        return [Client(parts[i-1], parts[i]) for i in range(1, len(parts), 2)]
 
 
 class TrackerResponse:
@@ -142,6 +175,9 @@ class TrackerResponse:
         self.index = index
         self.file_hash = file_hash
         self.clients = clients
+
+
+logger = Logger('logs.log')
 
 
 class P2PClient:
@@ -198,28 +234,31 @@ class P2PClient:
         return missing_indices_queue
 
     def request_missing_chunk(self, peer, index):
+        print(peer.ip, peer.port)
         peer_socket = Socket(peer.ip, peer.port).connect()
         message = f'{REQUEST_CHUNK},{index}'
         peer_socket.send_string(message)
         data = peer_socket.recvall()
+        print('never ever here')
         peer_socket.close()
         return data
 
     def get_missing_chunk(self, random_peer, index):
         file_data = self.request_missing_chunk(random_peer, index)
         file_name = f'chunk_{index}'
+        print('entering write to file lock')
         self.write_to_file_system(file_name, file_data)
+        print('exiting write to file lock')
         self.append_to_local_chunks(index)
 
     def write_to_file_system(self, file_name, file_data):
-        with self.lock:
-            path = os.path.join(self.folder, file_name)
-            with open(path, 'wb') as file:
-                file.write(file_data)
+        path = os.path.join(self.folder, file_name)
+        with open(path, 'wb') as file:
+            file.write(file_data)
 
     def append_to_local_chunks(self, new_index):
         chunks = []
-        with open(self.local_chunks_path, "r+") as file:
+        with open(self.local_chunks_path, "r") as file:
             for line in file:
                 index_str, file_name = line.strip().split(',')
                 index = int(index_str)
@@ -227,8 +266,11 @@ class P2PClient:
                     break
                 chunks.append(index)
             chunks.append(new_index)
-            updated = '\n'.join(f'{i},chunk_{i}' for i in sorted(chunks))
-            updated += f'\n{self.capacity},LASTCHUNK'
+
+        updated = '\n'.join(f'{i},chunk_{i}' for i in sorted(chunks))
+        updated += f'\n{self.capacity},LASTCHUNK'
+        print(updated)
+        with open(self.local_chunks_path, 'w') as file:
             file.write(updated)
 
     def request_missing_chunks(self):
@@ -236,41 +278,48 @@ class P2PClient:
         queue = self.missing_indices
         while len(queue) > 0:
             time.sleep(2)
+            print('GET_NEXT_MISSING_CHUNK')
             next_chunk_index = queue.popleft()
             print(f'searching for idx: {next_chunk_index}')
             response = self.tracker.where_chunk(next_chunk_index)
             if response.type != 'GET_CHUNK_FROM':
                 queue.append(next_chunk_index)
             else:
+                print('clients!')
+                print(response.clients)
                 random_peer = random.choice(response.clients)
                 self.get_missing_chunk(random_peer, next_chunk_index)
                 self.tracker.check_in_chunk(Chunk(
                     response.index,
                     response.file_hash
                 ))
+        print('no more chunks needed!!!!!!!!!!!!!!!!!!')
 
     def handle_peer_request(self, peer_socket, peer_address):
-        request = peer_socket.recv_string()
-        file_index = request.strip().split(',')[0]
+        request = peer_socket.recv(1024).decode('utf-8')
+        file_index = request.strip().split(',')[1]
         file_name = f'chunk_{file_index}'
         file_data = self.read_file_data(file_name)
+        print('START_SENDING_TO_PEER')
         peer_socket.sendall(file_data)
+        peer_socket.close()
+        print('FINISH_SENDING_TO_PEER')
 
     def read_file_data(self, file_name):
         path = os.path.join(self.folder, file_name)
-        with self.lock:
-            data = bytearray()
-            with open(path, "rb") as file:
-                while True:
-                    chunk = file.read(1024)
-                    if not chunk:
-                        break
-                    data.extend(chunk)
-            return data
+        data = bytearray()
+        with open(path, "rb") as file:
+            while True:
+                chunk = file.read(1024)
+                if not chunk:
+                    break
+                data.extend(chunk)
+        return data
 
     def listen_for_requests(self):
         client_socket = Socket(self.ip, self.port).listen()
         while True:
+            print('LISTEN_FOR_REQUESTS')
             peer_socket, peer_address = client_socket.accept()
             threading.Thread(
                 target=self.handle_peer_request,
@@ -290,7 +339,8 @@ def start_client(folder, transfer_port, name):
     threading.Thread(
         target=client.listen_for_requests,
         args=()
-    )
+    ).start()
+    # ^ this right here. Remember this.
 
 
 if __name__ == "__main__":
@@ -299,6 +349,7 @@ if __name__ == "__main__":
     parser.add_argument("-transfer_port", type=int)
     parser.add_argument("-name", type=str)
     args = parser.parse_args()
+    logger.set_entity_name(args.name)
     start_client(
         args.folder,
         args.transfer_port,
