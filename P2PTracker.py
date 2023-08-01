@@ -1,8 +1,8 @@
 import socket
 import threading
 import sys
+import time
 # import hashlib
-# import time
 import logging
 
 
@@ -29,7 +29,7 @@ class Logger:
         self.logger.info(message)
 
     def chunk_location_unknown(self, index):
-        message = f'P2PTracker,WHERE_CHUNK,{index}'
+        message = f'P2PTracker,{CHUNK_LOCATION_UNKNOWN},{index}'
         self.logger.info(message)
 
     def _use_local_host(self, ip):
@@ -45,13 +45,10 @@ class ClientSocket:
 
     def send(self, message):
         payload = message.encode('utf-8')
-        header = len(payload).to_bytes(4, 'big')
-        self.socket.send(header + payload)
+        self.socket.send(payload)
 
     def recv(self):
-        header = self.socket.recv(4)
-        payload_len = int.from_bytes(header, 'big')
-        return self.socket.recv(payload_len).decode('utf-8')
+        return self.socket.recv(512).decode('utf-8')
 
 
 class Client:
@@ -98,10 +95,10 @@ class ChunkTracker:
         self.chunk_list[index] = Chunk(clients, hash)
 
     def get_chunk(self, index):
-        with lock:
-            if index not in self.chunk_list:
-                return None
-            return self.chunk_list[index]
+        #with lock:
+        if index not in self.chunk_list:
+            return None
+        return self.chunk_list[index]
 
     def is_verified(self, index):
         return index in self.chunk_list
@@ -160,6 +157,7 @@ def handle_where_chunk(client, request_tokens):
 def handle_client_connection(client_socket, client_address):
     client = ClientSocket(client_socket, client_address)
     while True:
+        time.sleep(1)
         request = client.recv()
         if not request:
             break

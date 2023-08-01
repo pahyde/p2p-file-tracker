@@ -1,3 +1,4 @@
+import time
 import socket
 import argparse
 import os
@@ -36,7 +37,7 @@ class Logger:
 
     def request_chunk(self, index, ip, port):
         ip = self._use_local_host(ip)
-        message = f'{self.name},{index},{ip},{port}'
+        message = f'{self.name},{REQUEST_CHUNK},{index},{ip},{port}'
         self.logger.info(message)
 
     def _use_local_host(self, ip):
@@ -106,13 +107,10 @@ class Socket:
         return payload.decode('utf-8')
 
     def send(self, payload):
-        header = len(payload).to_bytes(4, 'big')
-        self.socket.send(header + payload)
+        self.socket.send(payload)
 
     def recv(self):
-        header = self.socket.recv(4)
-        payload_len = int.from_bytes(header, 'big')
-        return self.socket.recv(payload_len)
+        return self.socket.recv(256)
 
 
 class Tracker:
@@ -130,6 +128,7 @@ class Tracker:
 
     def check_in_chunks(self, chunks):
         for chunk in chunks:
+            time.sleep(2)
             self.check_in_chunk(chunk)
 
     def check_in_chunk(self, chunk):
@@ -230,8 +229,8 @@ class P2PClient:
         peer_socket = Socket(peer.ip, peer.port).connect()
         message = f'{REQUEST_CHUNK},{index}'
         peer_socket.send_string(message)
+        logger.request_chunk(index, peer.ip, peer.port)
         data = peer_socket.recvall()
-        peer_socket.close()
         return data
 
     def get_missing_chunk(self, random_peer, index):
@@ -265,6 +264,7 @@ class P2PClient:
         # use missing chunks queue to obtain missing chunks
         queue = self.missing_indices
         while len(queue) > 0:
+            time.sleep(2)
             next_chunk_index = queue.popleft()
             response = self.tracker.where_chunk(next_chunk_index)
             if response.type != 'GET_CHUNK_FROM':
@@ -276,7 +276,6 @@ class P2PClient:
                     response.index,
                     response.file_hash
                 ))
-        print('no more chunks needed!!!!!!!!!!!!!!!!!!')
 
     def handle_peer_request(self, peer_socket, peer_address):
         request = peer_socket.recv(1024).decode('utf-8')
@@ -301,6 +300,7 @@ class P2PClient:
         client_socket = Socket(self.ip, self.port).listen()
         while True:
             peer_socket, peer_address = client_socket.accept()
+            time.sleep(2)
             threading.Thread(
                 target=self.handle_peer_request,
                 args=(peer_socket, peer_address)
@@ -309,18 +309,18 @@ class P2PClient:
 
 def start_client(folder, transfer_port, name):
     client = P2PClient(folder, transfer_port, name)
-    client.check_in_local_chunks()
-    # Find clients with missing chunks and request
-    threading.Thread(
-        target=client.request_missing_chunks,
-        args=()
-    ).start()
     # listen and serve incoming chunk requests
     threading.Thread(
         target=client.listen_for_requests,
         args=()
     ).start()
     # ^ this right here. Remember this.
+    client.check_in_local_chunks()
+    # Find clients with missing chunks and request
+    threading.Thread(
+        target=client.request_missing_chunks,
+        args=()
+    ).start()
 
 
 if __name__ == "__main__":
